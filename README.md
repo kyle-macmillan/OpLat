@@ -8,6 +8,7 @@ Must have Iperf3 in path. The utility currently calls Iperf3 as a subprocess.
 ## Basic Usage
 Test Downstream Latency:
 `./oplat -c=[Iperf3 hostname] -p=[Iperf3 port] -d=[Ping Destination] -R`
+
 Testing Upstream Latency:
 `./oplat -c=[Iperf3 hostname] -p=[Iperf3 port] -d=[Ping Destination]`
 
