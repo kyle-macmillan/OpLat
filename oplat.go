@@ -102,7 +102,7 @@ func testICMP(test *OpLat) {
 	c := make(chan []byte)
 	go speedtest(c, test.Host, test.Port, test.Length, test.Download)
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(4 * time.Second)
 
 	ping_start := time.Now()
 	oplat := pingICMP(test)
@@ -174,7 +174,7 @@ func testTCP(test *OpLat) {
 	go speedtest(iperf, test.Host, test.Port, test.Length, test.Download)
 
 	// Wait several seconds before pinging to not catch iperf during slow start
-	time.Sleep(5 * time.Second)
+	time.Sleep(4 * time.Second)
 
 	ping_start := time.Now()
 	var ping_end time.Duration
@@ -265,56 +265,6 @@ func UpdateTCPStatistics(res []time.Duration, stats *Statistics,
 	stats.PacketLoss = 100 - (float64(PacketsRecv)/float64(PacketsSent))*100.0
 }
 
-func main() {
-	dstip := flag.String("d", "8.8.8.8", "Destination to ping")
-	proto := flag.String("m", "icmp", "Method (protocol) of probing")
-	n := flag.Int("n", 5, "Number of packets")
-	ptimeout := flag.String("timeout", "6", "Ping timeout (in seconds)")
-	pinterval := flag.String("i", "0.5", "inter-ping time (in seconds)")
-	testLength := flag.String("t", "10", "Iperf3 test length")
-	verb := flag.Bool("v", true, "Verbose output")
-	down := flag.Bool("R", false, "Reverse mode (test download)")
-	host := flag.String("c", "", "Iperf3 server hostname")
-	port := flag.String("p", "", "Iperf3 server port")
-
-	flag.Parse()
-
-	if *host == "" || *port == "" {
-		fmt.Println("Please specify Iperf3 host and port...Exiting")
-	}
-
-	timeout, _ := time.ParseDuration(fmt.Sprintf("%vs", *ptimeout))
-	interval, _ := time.ParseDuration(fmt.Sprintf("%vs", *pinterval))
-	length, _ := time.ParseDuration(fmt.Sprintf("%vs", *testLength))
-
-	test := OpLat{
-		DstIP:     *dstip,
-		Protocol:  *proto,
-		Host:      *host,
-		Port:      *port,
-		NumProbes: *n,
-		Timeout:   timeout,
-		Interval:  interval,
-		Length:    length,
-		Verbose:   *verb,
-		Download:  *down,
-		UnloadedStats: Statistics{
-			PacketsSent: *n,
-		},
-		LoadedStats: Statistics{
-			PacketsSent: *n,
-		},
-	}
-
-	if test.Protocol == "icmp" {
-		testICMP(&test)
-	} else if test.Protocol == "tcp" {
-		testTCP(&test)
-	} else {
-		fmt.Println(errors.New(fmt.Sprintf("Unrecognized protocol: %v. Choose from TCP or ICMP", test.Protocol)))
-	}
-}
-
 func speedtest(c chan []byte, host string, port string,
 	length time.Duration, download bool) {
 
@@ -403,5 +353,55 @@ func fmtResults(test *OpLat) {
 		}
 
 		writer.Flush()
+	}
+}
+
+func main() {
+	dstip := flag.String("d", "8.8.8.8", "Destination to ping")
+	proto := flag.String("m", "icmp", "Method (protocol) of probing")
+	n := flag.Int("n", 5, "Number of packets")
+	ptimeout := flag.String("timeout", "6", "Ping timeout (in seconds)")
+	pinterval := flag.String("i", "0.5", "inter-ping time (in seconds)")
+	testLength := flag.String("t", "10", "Iperf3 test length")
+	verb := flag.Bool("v", true, "Verbose output")
+	down := flag.Bool("R", false, "Reverse mode (test download)")
+	host := flag.String("c", "", "Iperf3 server hostname")
+	port := flag.String("p", "", "Iperf3 server port")
+
+	flag.Parse()
+
+	if *host == "" || *port == "" {
+		fmt.Println("Please specify Iperf3 host and port...Exiting")
+	}
+
+	timeout, _ := time.ParseDuration(fmt.Sprintf("%vs", *ptimeout))
+	interval, _ := time.ParseDuration(fmt.Sprintf("%vs", *pinterval))
+	length, _ := time.ParseDuration(fmt.Sprintf("%vs", *testLength))
+
+	test := OpLat{
+		DstIP:     *dstip,
+		Protocol:  *proto,
+		Host:      *host,
+		Port:      *port,
+		NumProbes: *n,
+		Timeout:   timeout,
+		Interval:  interval,
+		Length:    length,
+		Verbose:   *verb,
+		Download:  *down,
+		UnloadedStats: Statistics{
+			PacketsSent: *n,
+		},
+		LoadedStats: Statistics{
+			PacketsSent: *n,
+		},
+	}
+
+	if test.Protocol == "icmp" {
+		testICMP(&test)
+	} else if test.Protocol == "tcp" {
+		testTCP(&test)
+	} else {
+		fmt.Println(errors.New(fmt.Sprintf("Unrecognized protocol: %v. Choose from TCP or ICMP", test.Protocol)))
 	}
 }
