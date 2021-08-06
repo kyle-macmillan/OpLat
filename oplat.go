@@ -241,8 +241,6 @@ func UpdateTCPStatistics(res []time.Duration, stats *Statistics,
 	AvgRtt := 0 * time.Second
 	PacketsRecv := 0
 
-	fmt.Printf("res: %v\n", res)
-
 	for _, rtt := range res {
 		if rtt == -1*time.Second {
 			continue
@@ -259,13 +257,12 @@ func UpdateTCPStatistics(res []time.Duration, stats *Statistics,
 		}
 	}
 
-	x, _ := time.ParseDuration(fmt.Sprintf("%vs", PacketsRecv))
-	stats.AvgRtt = AvgRtt / x
+	stats.AvgRtt = AvgRtt / time.Duration(PacketsRecv)
 	stats.MaxRtt = MaxRtt
 	stats.MinRtt = MinRtt
 	stats.PacketsRecv = PacketsRecv
 	stats.PacketsSent = PacketsSent
-	stats.PacketLoss = float64(PacketsRecv) / float64(PacketsSent)
+	stats.PacketLoss = 100 - (float64(PacketsRecv)/float64(PacketsSent))*100.0
 }
 
 func main() {
@@ -345,6 +342,7 @@ func parseRes(test *OpLat, res []byte, diff time.Duration) {
 		m := item.(map[string]interface{})
 		for _, interval := range m["streams"].([]interface{}) {
 			m = interval.(map[string]interface{})
+			fmt.Printf("%v\n", m)
 			rates = append(rates, m["bits_per_second"].(float64)*1e-6)
 			if !test.Download {
 				retransmits = append(retransmits, m["retransmits"].(float64))
