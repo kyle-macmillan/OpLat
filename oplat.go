@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -17,6 +18,20 @@ import (
 )
 
 type OpLat struct {
+	// ICMP Pinger
+	TestICMP Pinger
+
+	// TCP Pinger
+	TestTCP Pinger
+
+	// Flag if tcp test is included
+	tcp bool
+
+	// Flag if icmp test is included
+	icmp bool
+}
+
+type Pinger struct {
 	// Destination to ping
 	DstIP string
 
@@ -28,6 +43,9 @@ type OpLat struct {
 
 	// Port of iPerf3 server to use for speedtest
 	Port string
+
+	// Port of destination to ping
+	TCPPort string
 
 	// Number of Probes to send
 	NumProbes int
@@ -95,14 +113,60 @@ type Statistics struct {
 	AvgRtt time.Duration
 }
 
-func testICMP(test *OpLat) {
+func Control(test *OpLat) {
+
+	cTCP := make(chan []byte)
+	cICMP := make(chan []byte)
+	cIPERF := make(chan []byte)
+
+	if test.tcp {
+		go testTCP(&test.TestTCP, cTCP)
+	}
+	if test.icmp {
+		go testICMP(&test.TestICMP, cICMP)
+	}
+
+	// Wait to begin speedtest until finished unloaded
+	if test.tcp {
+		<-cTCP
+	}
+	if test.icmp {
+		<-cICMP
+	}
+
+	go speedtest(cIPERF, test.TestTCP.Host, test.TestTCP.Port,
+		test.TestTCP.Length, test.TestTCP.Download)
+	time.Sleep(4 * time.Second)
+
+	if test.tcp {
+		cTCP <- []byte{}
+	}
+
+	if test.icmp {
+		cICMP <- []byte{}
+	}
+
+	res := <-cIPERF
+
+	if test.tcp {
+		cTCP <- res
+	}
+
+	if test.icmp {
+		cICMP <- res
+	}
+
+}
+
+func testICMP(test *Pinger, c chan []byte) {
 
 	lat := pingICMP(test)
 
-	c := make(chan []byte)
-	go speedtest(c, test.Host, test.Port, test.Length, test.Download)
+	// Signal to control that unloaded ping test is complete
+	c <- []byte{}
 
-	time.Sleep(4 * time.Second)
+	// Block until iPerf3 has been running for 4 seconds
+	<-c
 
 	ping_start := time.Now()
 	oplat := pingICMP(test)
@@ -118,11 +182,9 @@ func testICMP(test *OpLat) {
 	updateICMPStatistics(lat, &test.UnloadedStats)
 	updateICMPStatistics(oplat, &test.LoadedStats)
 	parseRes(test, res, diff)
-
-	fmtResults(test)
 }
 
-func pingICMP(test *OpLat) *ping.Statistics {
+func pingICMP(test *Pinger) *ping.Statistics {
 	pinger, err := ping.NewPinger(test.DstIP)
 	if err != nil {
 		panic(err)
@@ -152,44 +214,44 @@ func updateICMPStatistics(res *ping.Statistics, stats *Statistics) {
 	stats.PacketsSent = res.PacketsSent
 }
 
-func testTCP(test *OpLat) {
+func testTCP(test *Pinger, c chan []byte) {
 
 	var UnloadedRtts []time.Duration
 	var LoadedRtts []time.Duration
-	c := make(chan time.Duration)
-	iperf := make(chan []byte)
+	tcpChan := make(chan time.Duration)
 
 	// Test unloaded latency
-	go pingTCP(test.DstIP, test.Timeout, test.Interval, test.NumProbes, c)
+	go pingTCP(test.DstIP, test.TCPPort, test.Timeout,
+		test.Interval, test.NumProbes, tcpChan)
 
 	for {
-		res := <-c
+		res := <-tcpChan
 		UnloadedRtts = append(UnloadedRtts, res)
 		if len(UnloadedRtts) == test.NumProbes {
 			break
 		}
 	}
 
-	// Test loaded latency
-	go speedtest(iperf, test.Host, test.Port, test.Length, test.Download)
+	// Signal to control that unloaded ping test is complete
+	c <- []byte{}
 
-	// Wait several seconds before pinging to not catch iperf during slow start
-	time.Sleep(4 * time.Second)
-
+	// Block until iPerf3 has run for 4 seconds
+	<-c
 	ping_start := time.Now()
 	var ping_end time.Duration
 	var iperf_end time.Duration
 	var out []byte
 
-	go pingTCP(test.DstIP, test.Timeout, test.Interval, test.NumProbes, c)
+	go pingTCP(test.DstIP, test.TCPPort, test.Timeout,
+		test.Interval, test.NumProbes, tcpChan)
 	for i := 0; i <= test.NumProbes; i++ {
 		select {
-		case res := <-c:
+		case res := <-tcpChan:
 			LoadedRtts = append(LoadedRtts, res)
 			if len(LoadedRtts) == test.NumProbes {
 				ping_end = time.Since(ping_start)
 			}
-		case out = <-iperf:
+		case out = <-c:
 			iperf_end = time.Since(ping_start)
 		}
 	}
@@ -203,12 +265,9 @@ func testTCP(test *OpLat) {
 	UpdateTCPStatistics(test.UnloadedRtt, &test.UnloadedStats, test.NumProbes)
 	UpdateTCPStatistics(test.LoadedRtt, &test.LoadedStats, test.NumProbes)
 	parseRes(test, out, iperf_end-ping_end)
-
-	fmtResults(test)
-
 }
 
-func pingTCP(dst string, timeout time.Duration,
+func pingTCP(dst string, port string, timeout time.Duration,
 	interval time.Duration, n int, c chan time.Duration) {
 
 	ticker := time.NewTicker(interval)
@@ -217,7 +276,7 @@ func pingTCP(dst string, timeout time.Duration,
 		<-ticker.C
 		go func(dst string, timeout time.Duration) {
 			startAt := time.Now()
-			conn, err := net.DialTimeout("tcp", dst+":443", timeout)
+			conn, err := net.DialTimeout("tcp", dst+":"+port, timeout)
 			endAt := time.Now()
 
 			// Return -1 if any errors during connection
@@ -257,9 +316,15 @@ func UpdateTCPStatistics(res []time.Duration, stats *Statistics,
 		}
 	}
 
-	stats.AvgRtt = AvgRtt / time.Duration(PacketsRecv)
-	stats.MaxRtt = MaxRtt
-	stats.MinRtt = MinRtt
+	if PacketsRecv == 0 {
+		stats.AvgRtt = -1
+		stats.MaxRtt = -1
+		stats.MinRtt = -1
+	} else {
+		stats.AvgRtt = AvgRtt / time.Duration(PacketsRecv)
+		stats.MaxRtt = MaxRtt
+		stats.MinRtt = MinRtt
+	}
 	stats.PacketsRecv = PacketsRecv
 	stats.PacketsSent = PacketsSent
 	stats.PacketLoss = 100 - (float64(PacketsRecv)/float64(PacketsSent))*100.0
@@ -282,7 +347,7 @@ func speedtest(c chan []byte, host string, port string,
 	c <- out
 }
 
-func parseRes(test *OpLat, res []byte, diff time.Duration) {
+func parseRes(test *Pinger, res []byte, diff time.Duration) {
 	var rates []float64
 	var retransmits []float64
 	var f map[string]interface{}
@@ -292,7 +357,6 @@ func parseRes(test *OpLat, res []byte, diff time.Duration) {
 		m := item.(map[string]interface{})
 		for _, interval := range m["streams"].([]interface{}) {
 			m = interval.(map[string]interface{})
-			fmt.Printf("%v\n", m)
 			rates = append(rates, m["bits_per_second"].(float64)*1e-6)
 			if !test.Download {
 				retransmits = append(retransmits, m["retransmits"].(float64))
@@ -314,7 +378,24 @@ func parseRes(test *OpLat, res []byte, diff time.Duration) {
 	}
 }
 
-func fmtResults(test *OpLat) {
+func Output(test *OpLat, FmtJSON bool) {
+
+	if FmtJSON {
+		dat, _ := json.Marshal(test)
+		fmt.Println(string(dat))
+		return
+	}
+
+	if test.icmp {
+		OutputPlain(&test.TestICMP)
+	}
+
+	if test.tcp {
+		OutputPlain(&test.TestTCP)
+	}
+}
+
+func OutputPlain(test *Pinger) {
 
 	direction := "Upstream"
 	if test.Download {
@@ -323,17 +404,26 @@ func fmtResults(test *OpLat) {
 
 	// Unloaded latency statistics
 	fmt.Printf("\n--- %s Unloaded (%s) Latency Statistics to %s---\n", direction, test.Protocol, test.DstIP)
-	fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss\n",
-		test.UnloadedStats.PacketsSent, test.UnloadedStats.PacketsRecv, test.UnloadedStats.PacketLoss)
-	fmt.Printf("round-trip min/avg/max = %v/%v/%v\n",
-		test.UnloadedStats.MinRtt, test.UnloadedStats.AvgRtt, test.UnloadedStats.MaxRtt)
+	if test.UnloadedStats.AvgRtt == -1 {
+		fmt.Println("NO RESPONSE DURING UNLOADED TEST")
+	} else {
+		fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss\n",
+			test.UnloadedStats.PacketsSent, test.UnloadedStats.PacketsRecv, test.UnloadedStats.PacketLoss)
+		fmt.Printf("round-trip min/avg/max = %v/%v/%v\n",
+			test.UnloadedStats.MinRtt, test.UnloadedStats.AvgRtt, test.UnloadedStats.MaxRtt)
+	}
 
 	// Loaded latency statistics
 	fmt.Printf("\n--- %s Loaded (%s) Latency Statistics to %s---\n", direction, test.Protocol, test.DstIP)
-	fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss\n",
-		test.LoadedStats.PacketsSent, test.LoadedStats.PacketsRecv, test.LoadedStats.PacketLoss)
-	fmt.Printf("round-trip min/avg/max = %v/%v/%v/\n",
-		test.LoadedStats.MinRtt, test.LoadedStats.AvgRtt, test.LoadedStats.MaxRtt)
+	if test.LoadedStats.AvgRtt == -1 {
+		fmt.Println("NO RESPONSE DURING LOADED TEST")
+		return
+	} else {
+		fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss\n",
+			test.LoadedStats.PacketsSent, test.LoadedStats.PacketsRecv, test.LoadedStats.PacketLoss)
+		fmt.Printf("round-trip min/avg/max = %v/%v/%v/\n",
+			test.LoadedStats.MinRtt, test.LoadedStats.AvgRtt, test.LoadedStats.MaxRtt)
+	}
 
 	// Verbose output
 	if test.Verbose {
@@ -342,22 +432,23 @@ func fmtResults(test *OpLat) {
 
 		if test.Download {
 			fmt.Fprintln(writer, "[Probe RTT]\t[Load (Mb/s)]")
-			for _, item := range test.PingLoads {
-				fmt.Fprintf(writer, "%v\t%v\n", item.Rtt, item.Rate)
+			for i := len(test.PingLoads) - 1; i >= 0; i-- {
+				fmt.Fprintf(writer, "%v\t%v\n", test.PingLoads[i].Rtt,
+					test.PingLoads[i].Rate)
 			}
 		} else {
 			fmt.Fprintln(writer, "[Probe RTT]\t[Load (Mb/s)]\t[Retransmissions]")
-			for _, item := range test.PingLoads {
-				fmt.Fprintf(writer, "%v\t%v\t%v\n", item.Rtt, item.Rate, item.Retransmits)
+			for i := len(test.PingLoads) - 1; i >= 0; i-- {
+				fmt.Fprintf(writer, "%v\t%v\t%v\n", test.PingLoads[i].Rtt,
+					test.PingLoads[i].Rate, test.PingLoads[i].Retransmits)
 			}
 		}
-
 		writer.Flush()
 	}
 }
 
 func main() {
-	dstip := flag.String("d", "8.8.8.8", "Destination to ping")
+	dst := flag.String("d", "8.8.8.8", "Destination to ping")
 	proto := flag.String("m", "icmp", "Method (protocol) of probing")
 	n := flag.Int("n", 5, "Number of packets")
 	ptimeout := flag.String("timeout", "6", "Ping timeout (in seconds)")
@@ -367,6 +458,7 @@ func main() {
 	down := flag.Bool("R", false, "Reverse mode (test download)")
 	host := flag.String("c", "", "Iperf3 server hostname")
 	port := flag.String("p", "", "Iperf3 server port")
+	FmtJSON := flag.Bool("J", false, "Print output as json")
 
 	flag.Parse()
 
@@ -378,30 +470,67 @@ func main() {
 	interval, _ := time.ParseDuration(fmt.Sprintf("%vs", *pinterval))
 	length, _ := time.ParseDuration(fmt.Sprintf("%vs", *testLength))
 
+	var ICMPinger Pinger
+	var TCPinger Pinger
 	test := OpLat{
-		DstIP:     *dstip,
-		Protocol:  *proto,
-		Host:      *host,
-		Port:      *port,
-		NumProbes: *n,
-		Timeout:   timeout,
-		Interval:  interval,
-		Length:    length,
-		Verbose:   *verb,
-		Download:  *down,
-		UnloadedStats: Statistics{
-			PacketsSent: *n,
-		},
-		LoadedStats: Statistics{
-			PacketsSent: *n,
-		},
+		TestTCP:  TCPinger,
+		TestICMP: ICMPinger,
+		tcp:      false,
+		icmp:     false,
 	}
 
-	if test.Protocol == "icmp" {
-		testICMP(&test)
-	} else if test.Protocol == "tcp" {
-		testTCP(&test)
-	} else {
-		fmt.Println(errors.New(fmt.Sprintf("Unrecognized protocol: %v. Choose from TCP or ICMP", test.Protocol)))
+	for _, ele := range strings.Split(*proto, " ") {
+		if ele == "icmp" {
+			test.icmp = true
+			ICMPinger = Pinger{
+				DstIP:     strings.Split(*dst, ":")[0],
+				Protocol:  "icmp",
+				Host:      *host,
+				Port:      *port,
+				NumProbes: *n,
+				Timeout:   timeout,
+				Interval:  interval,
+				Length:    length,
+				Verbose:   *verb,
+				Download:  *down,
+				UnloadedStats: Statistics{
+					PacketsSent: *n,
+				},
+				LoadedStats: Statistics{
+					PacketsSent: *n,
+				},
+			}
+		}
+		if ele == "tcp" {
+			test.tcp = true
+			TCPinger = Pinger{
+				DstIP:     strings.Split(*dst, ":")[0],
+				TCPPort:   strings.Split(*dst, ":")[1],
+				Protocol:  "tcp",
+				Host:      *host,
+				Port:      *port,
+				NumProbes: *n,
+				Timeout:   timeout,
+				Interval:  interval,
+				Length:    length,
+				Verbose:   *verb,
+				Download:  *down,
+				UnloadedStats: Statistics{
+					PacketsSent: *n,
+				},
+				LoadedStats: Statistics{
+					PacketsSent: *n,
+				},
+			}
+		}
 	}
+
+	if !test.icmp && !test.tcp {
+		fmt.Println(errors.New(fmt.Sprintf("Unrecognized protocols: %v. Choose from TCP or ICMP", *proto)))
+		return
+	}
+
+	Control(&test)
+
+	Output(&test, *FmtJSON)
 }
