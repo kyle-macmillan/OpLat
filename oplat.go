@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -18,11 +19,26 @@ import (
 )
 
 type OpLat struct {
+	// Absolute path to iPerf3 executable
+	Path string
+
+	// Host of iPerf3 server to use for speedtest
+	Host string
+
+	//Port of iPerf3 server to use for speedtest
+	Port string
+
 	// ICMP Pinger
-	TestICMP Pinger
+	ICMPinger Pinger
 
 	// TCP Pinger
-	TestTCP Pinger
+	TCPinger Pinger
+
+	// Test upload latency under load
+	Download bool
+
+	// Length of Iperf3 test
+	Length time.Duration
 
 	// Flag if tcp test is included
 	tcp bool
@@ -32,23 +48,19 @@ type OpLat struct {
 }
 
 type Pinger struct {
-	// Destination to ping
+	// Desintation IP to ping
 	DstIP string
 
+	// Destination port to ping
+	TCPPort string
 	// Protocol type of probes (e.g. TCP, ICMP)
 	Protocol string
 
-	// Host of iPerf3 server to use for speedtest
-	Host string
-
-	// Port of iPerf3 server to use for speedtest
-	Port string
-
-	// Port of destination to ping
-	TCPPort string
-
 	// Number of Probes to send
 	NumProbes int
+
+	// Length of iPerf3 Test (used to calculate ping intervals
+	Length time.Duration
 
 	// Timeout specifies a timeout before ping exits, regardless of how many
 	// packets have been received. Default is 6s
@@ -56,9 +68,6 @@ type Pinger struct {
 
 	// Interval is the wait time between each packet send. Default is 0.5s
 	Interval time.Duration
-
-	// Length of Iperf3 test
-	Length time.Duration
 
 	// Rtts without iperf load
 	UnloadedRtt []time.Duration
@@ -78,7 +87,7 @@ type Pinger struct {
 	// Setting to true prints extra info about probes
 	Verbose bool
 
-	// Test upload latency under load
+	// Test download latency under load
 	Download bool
 }
 
@@ -113,17 +122,19 @@ type Statistics struct {
 	AvgRtt time.Duration
 }
 
-func Control(test *OpLat) {
+func Control(test *OpLat, wg *sync.WaitGroup) {
 
 	cTCP := make(chan []byte)
 	cICMP := make(chan []byte)
 	cIPERF := make(chan []byte)
 
 	if test.tcp {
-		go testTCP(&test.TestTCP, cTCP)
+		wg.Add(1)
+		go testTCP(&test.TCPinger, cTCP, wg)
 	}
 	if test.icmp {
-		go testICMP(&test.TestICMP, cICMP)
+		wg.Add(1)
+		go testICMP(&test.ICMPinger, cICMP, wg)
 	}
 
 	// Wait to begin speedtest until finished unloaded
@@ -134,8 +145,7 @@ func Control(test *OpLat) {
 		<-cICMP
 	}
 
-	go speedtest(cIPERF, test.TestTCP.Host, test.TestTCP.Port,
-		test.TestTCP.Length, test.TestTCP.Download)
+	go speedtest(cIPERF, test)
 	time.Sleep(4 * time.Second)
 
 	if test.tcp {
@@ -158,7 +168,9 @@ func Control(test *OpLat) {
 
 }
 
-func testICMP(test *Pinger, c chan []byte) {
+func testICMP(test *Pinger, c chan []byte, wg *sync.WaitGroup) {
+
+	defer wg.Done()
 
 	lat := pingICMP(test)
 
@@ -214,7 +226,9 @@ func updateICMPStatistics(res *ping.Statistics, stats *Statistics) {
 	stats.PacketsSent = res.PacketsSent
 }
 
-func testTCP(test *Pinger, c chan []byte) {
+func testTCP(test *Pinger, c chan []byte, wg *sync.WaitGroup) {
+
+	defer wg.Done()
 
 	var UnloadedRtts []time.Duration
 	var LoadedRtts []time.Duration
@@ -330,17 +344,17 @@ func UpdateTCPStatistics(res []time.Duration, stats *Statistics,
 	stats.PacketLoss = 100 - (float64(PacketsRecv)/float64(PacketsSent))*100.0
 }
 
-func speedtest(c chan []byte, host string, port string,
-	length time.Duration, download bool) {
+func speedtest(c chan []byte, test *OpLat) {
 
 	reverse := ""
-	if download {
+	if test.Download {
 		reverse = "-R"
 	}
 
-	out, err := exec.Command("iperf3", "-c", host, "-p", port,
-		"-J", reverse, "-t", length.String()).Output()
+	out, err := exec.Command(test.Path, "-c", test.Host, "-p", test.Port,
+		"-J", reverse, "-t", test.Length.String()).Output()
 	if err != nil {
+		fmt.Println("Error launching iPerf3")
 		log.Fatal(err)
 	}
 
@@ -387,11 +401,11 @@ func Output(test *OpLat, FmtJSON bool) {
 	}
 
 	if test.icmp {
-		OutputPlain(&test.TestICMP)
+		OutputPlain(&test.ICMPinger)
 	}
 
 	if test.tcp {
-		OutputPlain(&test.TestTCP)
+		OutputPlain(&test.TCPinger)
 	}
 }
 
@@ -448,6 +462,7 @@ func OutputPlain(test *Pinger) {
 }
 
 func main() {
+	iperfPath := flag.String("s", "", "Path to iperf3 executable")
 	dst := flag.String("d", "8.8.8.8", "Destination to ping")
 	proto := flag.String("m", "icmp", "Method (protocol) of probing")
 	n := flag.Int("n", 5, "Number of packets")
@@ -470,11 +485,12 @@ func main() {
 	interval, _ := time.ParseDuration(fmt.Sprintf("%vs", *pinterval))
 	length, _ := time.ParseDuration(fmt.Sprintf("%vs", *testLength))
 
-	var ICMPinger Pinger
-	var TCPinger Pinger
 	test := OpLat{
-		TestTCP:  TCPinger,
-		TestICMP: ICMPinger,
+		Path:     *iperfPath,
+		Host:     *host,
+		Port:     *port,
+		Length:   length,
+		Download: *down,
 		tcp:      false,
 		icmp:     false,
 	}
@@ -482,17 +498,15 @@ func main() {
 	for _, ele := range strings.Split(*proto, " ") {
 		if ele == "icmp" {
 			test.icmp = true
-			ICMPinger = Pinger{
+			test.ICMPinger = Pinger{
 				DstIP:     strings.Split(*dst, ":")[0],
 				Protocol:  "icmp",
-				Host:      *host,
-				Port:      *port,
 				NumProbes: *n,
+				Length:    length,
 				Timeout:   timeout,
 				Interval:  interval,
-				Length:    length,
-				Verbose:   *verb,
 				Download:  *down,
+				Verbose:   *verb,
 				UnloadedStats: Statistics{
 					PacketsSent: *n,
 				},
@@ -502,19 +516,22 @@ func main() {
 			}
 		}
 		if ele == "tcp" {
+			if len(strings.Split(*dst, ":")) != 2 {
+				fmt.Println(errors.New(fmt.Sprintf(
+					"TCP Dst Addr in wrong format. Found '%v', need [ip]:[port]", *dst)))
+				return
+			}
 			test.tcp = true
-			TCPinger = Pinger{
+			test.TCPinger = Pinger{
 				DstIP:     strings.Split(*dst, ":")[0],
 				TCPPort:   strings.Split(*dst, ":")[1],
 				Protocol:  "tcp",
-				Host:      *host,
-				Port:      *port,
 				NumProbes: *n,
+				Length:    length,
 				Timeout:   timeout,
 				Interval:  interval,
-				Length:    length,
-				Verbose:   *verb,
 				Download:  *down,
+				Verbose:   *verb,
 				UnloadedStats: Statistics{
 					PacketsSent: *n,
 				},
@@ -530,7 +547,9 @@ func main() {
 		return
 	}
 
-	Control(&test)
+	var wg sync.WaitGroup
+	Control(&test, &wg)
 
+	wg.Wait()
 	Output(&test, *FmtJSON)
 }
