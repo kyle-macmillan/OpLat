@@ -47,10 +47,10 @@ type OpLat struct {
 	icmp bool
 
 	// Sum of data received during iPerf3 test (bytes)
-	SumRecv int
+	SumRecv float64
 
 	// Sum of data sent during iPerf3 test (bytes)
-	SumSent int
+	SumSent float64
 }
 
 type Pinger struct {
@@ -172,6 +172,8 @@ func Control(test *OpLat, wg *sync.WaitGroup) {
 		cICMP <- res
 	}
 
+	getUsage(test, res)
+
 }
 
 func getUsage(test *OpLat, res []byte) {
@@ -180,8 +182,8 @@ func getUsage(test *OpLat, res []byte) {
 
 	json.Unmarshal(res, &f)
 
-	test.SumSent = f["end"].(map[string]interface{})["sum_sent"].(map[string]int)["bytes"]
-	test.SumRecv = f["end"].(map[string]interface{})["sum_received"].(map[string]int)["bytes"]
+	test.SumSent = f["end"].(map[string]interface{})["sum_sent"].(map[string]interface{})["bytes"].(float64)
+	test.SumRecv = f["end"].(map[string]interface{})["sum_received"].(map[string]interface{})["bytes"].(float64)
 }
 
 func testICMP(test *Pinger, c chan []byte, wg *sync.WaitGroup) {
