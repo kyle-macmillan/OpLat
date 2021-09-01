@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -369,14 +370,24 @@ func speedtest(c chan []byte, test *OpLat) {
 		reverse = "-R"
 	}
 
-	out, err := exec.Command(test.Path, "-c", test.Host, "-p", test.Port,
-		"-J", reverse, "-t", test.Length.String()).Output()
-	if err != nil {
-		fmt.Println("Error launching iPerf3")
-		log.Fatal(err)
-	}
+	timeout := test.Length + time.Second*10
 
-	c <- out
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, test.Path, "-c", test.Host, "-p", test.Port,
+		"-J", reverse, "-t", test.Length.String())
+
+	// If iperf3 doesn't terminated within test length + 10secs, kill process
+	if out, err := cmd.Output(); err != nil {
+		fmt.Println("Error launching or completing iPerf3")
+		log.Fatal(err)
+		cmd.Process.Kill()
+	} else {
+		c <- out
+	}
 }
 
 func parseRes(test *Pinger, res []byte, diff time.Duration) {
