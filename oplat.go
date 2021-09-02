@@ -290,7 +290,7 @@ func testTCP(test *Pinger, c chan []byte, wg *sync.WaitGroup) {
 	}
 
 	if iperf_end < ping_end {
-		fmt.Println(errors.New(fmt.Sprintf("iPerf3 finished before pings, suggested test length increase: %v", ping_end-iperf_end)))
+		log.Fatal(errors.New(fmt.Sprintf("iPerf3 finished before pings, suggested test length increase: %v", ping_end-iperf_end)))
 	}
 
 	test.UnloadedRtt = UnloadedRtts
@@ -497,7 +497,7 @@ func main() {
 	n := flag.Int("n", 5, "Number of packets")
 	ptimeout := flag.String("timeout", "6", "Ping timeout (in seconds)")
 	pinterval := flag.String("i", "0.5", "inter-ping time (in seconds)")
-	testLength := flag.String("t", "10", "Iperf3 test length")
+	testLength := flag.String("t", "12", "Iperf3 test length")
 	verb := flag.Bool("v", true, "Verbose output")
 	down := flag.Bool("R", false, "Reverse mode (test download)")
 	host := flag.String("c", "", "Iperf3 server hostname")
