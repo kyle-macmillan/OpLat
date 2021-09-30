@@ -406,6 +406,9 @@ func parseRes(test *Pinger, res []byte, diff time.Duration) {
 			}
 		}
 	}
+	if len(test.LoadedRtt) < 1 {
+		log.Fatal(errors.New(fmt.Sprintf("Connection error, unresponsive pings")))
+	}
 	lastInterval := test.Length - diff -
 		(test.LoadedRtt[len(test.LoadedRtt)-1])
 
