@@ -497,7 +497,7 @@ func main() {
 	n := flag.Int("n", 5, "Number of packets")
 	ptimeout := flag.String("timeout", "6", "Ping timeout (in seconds)")
 	pinterval := flag.String("i", "0.5", "inter-ping time (in seconds)")
-	testLength := flag.String("t", "12", "Iperf3 test length")
+	testLength := flag.String("t", "13", "Iperf3 test length")
 	verb := flag.Bool("v", true, "Verbose output")
 	down := flag.Bool("R", false, "Reverse mode (test download)")
 	host := flag.String("c", "", "Iperf3 server hostname")
