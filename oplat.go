@@ -41,17 +41,28 @@ type OpLat struct {
 	// Length of Iperf3 test
 	Length time.Duration
 
+	// Number of threads
+	NumThreads string
+
 	// Flag if tcp test is included
 	tcp bool
 
 	// Flag if icmp test is included
 	icmp bool
 
+	//Per-second throughput
+	Intervals []float64
+
 	// Sum of data received during iPerf3 test (bytes)
 	SumRecv float64
 
 	// Sum of data sent during iPerf3 test (bytes)
 	SumSent float64
+
+	// Avg data transfer
+	AvgSumRecv float64
+
+	AvgSumSent float64
 }
 
 type Pinger struct {
@@ -174,7 +185,19 @@ func Control(test *OpLat, wg *sync.WaitGroup) {
 	}
 
 	getUsage(test, res)
+	getIntervals(test, res)
 
+}
+
+func getIntervals(test *OpLat, res []byte) {
+	var f map[string]interface{}
+
+	json.Unmarshal(res, &f)
+
+	for _, item := range f["intervals"].([]interface{}) {
+		m := item.(map[string]interface{})["sum"].(map[string]interface{})
+		test.Intervals = append(test.Intervals, m["bits_per_second"].(float64)*1e-6)
+	}
 }
 
 func getUsage(test *OpLat, res []byte) {
@@ -185,6 +208,9 @@ func getUsage(test *OpLat, res []byte) {
 
 	test.SumSent = f["end"].(map[string]interface{})["sum_sent"].(map[string]interface{})["bytes"].(float64)
 	test.SumRecv = f["end"].(map[string]interface{})["sum_received"].(map[string]interface{})["bytes"].(float64)
+
+	test.AvgSumSent = f["end"].(map[string]interface{})["sum_sent"].(map[string]interface{})["bits_per_second"].(float64)
+	test.AvgSumRecv = f["end"].(map[string]interface{})["sum_received"].(map[string]interface{})["bits_per_second"].(float64)
 }
 
 func testICMP(test *Pinger, c chan []byte, wg *sync.WaitGroup) {
@@ -378,7 +404,7 @@ func speedtest(c chan []byte, test *OpLat) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, test.Path, "-c", test.Host, "-p", test.Port,
-		"-J", reverse, "-t", test.Length.String())
+		"-J", reverse, "-t", test.Length.String(), "-P", "3")
 
 	// If iperf3 doesn't terminated within test length + 10secs, kill process
 	if out, err := cmd.Output(); err != nil {
@@ -397,13 +423,10 @@ func parseRes(test *Pinger, res []byte, diff time.Duration) {
 
 	json.Unmarshal(res, &f)
 	for _, item := range f["intervals"].([]interface{}) {
-		m := item.(map[string]interface{})
-		for _, interval := range m["streams"].([]interface{}) {
-			m = interval.(map[string]interface{})
-			rates = append(rates, m["bits_per_second"].(float64)*1e-6)
-			if !test.Download {
-				retransmits = append(retransmits, m["retransmits"].(float64))
-			}
+		m := item.(map[string]interface{})["sum"].(map[string]interface{})
+		rates = append(rates, m["bits_per_second"].(float64)*1e-6)
+		if !test.Download {
+			retransmits = append(retransmits, m["retransmits"].(float64))
 		}
 	}
 	if len(test.LoadedRtt) < 1 {
@@ -501,6 +524,7 @@ func main() {
 	ptimeout := flag.String("timeout", "6", "Ping timeout (in seconds)")
 	pinterval := flag.String("i", "0.5", "inter-ping time (in seconds)")
 	testLength := flag.String("t", "13", "Iperf3 test length")
+	nthreads := flag.String("P", "4", "Number of iPerf3 threads")
 	verb := flag.Bool("v", true, "Verbose output")
 	down := flag.Bool("R", false, "Reverse mode (test download)")
 	host := flag.String("c", "", "Iperf3 server hostname")
@@ -518,13 +542,14 @@ func main() {
 	length, _ := time.ParseDuration(fmt.Sprintf("%vs", *testLength))
 
 	test := OpLat{
-		Path:     *iperfPath,
-		Host:     *host,
-		Port:     *port,
-		Length:   length,
-		Download: *down,
-		tcp:      false,
-		icmp:     false,
+		Path:       *iperfPath,
+		Host:       *host,
+		Port:       *port,
+		Length:     length,
+		NumThreads: *nthreads,
+		Download:   *down,
+		tcp:        false,
+		icmp:       false,
 	}
 
 	for _, ele := range strings.Split(*proto, " ") {
